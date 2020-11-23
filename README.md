@@ -1,4 +1,5 @@
-# SFDC trigger framework
+# SFDC trigger framework (Experimental)
+** This is an experimental fork of the Kevin O'Hara Trigger Framework. This should not be used in any production environments. Use at your own risk. Author/Modifiers take no responsibility for impact that this framework may have to your Salesforce Org.
 
 [![npm version](https://badge.fury.io/js/sfdc-trigger-framework.svg)](https://badge.fury.io/js/sfdc-trigger-framework)
 [![Maintainability](https://api.codeclimate.com/v1/badges/eeeae5a492e34feace99/maintainability)](https://codeclimate.com/github/kevinohara80/sfdc-trigger-framework/maintainability)
