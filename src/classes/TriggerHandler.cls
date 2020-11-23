@@ -2,7 +2,14 @@ public virtual class TriggerHandler {
 
   // static map of handlername, times run() was invoked
   private static Map<String, LoopCount> loopCountMap;
+  // static Set of Strings to bypass full Trigger Handlers
   private static Set<String> bypassedHandlers;
+  // Static Map of Handlername, List of Bypassed Contexts
+  private static Map<String, List<String>> bypassedHandlerContexts;
+  
+  // Variables for Concurrent Operation
+  private static final Integer MAX_CONCURRENT_OPERATIONS = 5;
+  private static final Integer MAX_IMPLICIT_BYPASS_LEVELS = 2;
 
   // the current context of the trigger, overridable in tests
   @TestVisible
@@ -16,6 +23,7 @@ public virtual class TriggerHandler {
   static {
     loopCountMap = new Map<String, LoopCount>();
     bypassedHandlers = new Set<String>();
+    bypassedHandlerContexts = new Map<String, List<String>>();
   }
   
   // constructor
@@ -62,6 +70,7 @@ public virtual class TriggerHandler {
     }
   }
 
+  // method to set maximum loop count
   public void setMaxLoopCount(Integer max) {
     String handlerName = getHandlerName();
     if(!TriggerHandler.loopCountMap.containsKey(handlerName)) {
@@ -71,28 +80,63 @@ public virtual class TriggerHandler {
     }
   }
 
+  // method to reset the loop count
   public void clearMaxLoopCount() {
     this.setMaxLoopCount(-1);
+  }
+  
+  public Integer getLoopCount() {
+    String handlerName = getHandlerName();
+    if(TriggerHandler.loopCountMap.containsKey(handlerName)){
+      return TriggerHandler.loopCountMap.get(handlerName).getCount();
+    }
+    else{
+      return null;
+    }
   }
 
   /***************************************
    * public static methods
    ***************************************/
 
+  // bypass specific trigger handlers
   public static void bypass(String handlerName) {
     TriggerHandler.bypassedHandlers.add(handlerName);
   }
 
+  // clear trigger handler bypass
   public static void clearBypass(String handlerName) {
     TriggerHandler.bypassedHandlers.remove(handlerName);
   }
 
+  // check if handler is currently bypassed
   public static Boolean isBypassed(String handlerName) {
     return TriggerHandler.bypassedHandlers.contains(handlerName);
   }
+  
+  // bypass specific trigger handler context
+  public static void bypassContext(String handlerName, String ctx) {
+    if(TriggerHandler.bypassedHandlerContexts.containsKey(handlerName)) {
+      TriggerHandler.bypassedHandlerContexts.get(handlerName).add(ctx);
+    }
+    else {
+      TriggerHandler.bypassedHandlerContexts.put(handlerName, new List<String>{ctx});
+    }
+  }
+  
+  // clear all context bypasses for specific trigger handler
+  public static void clearContextBypass(String handlerName) {
+    TriggerHandler.bypassedHandlerContexts.remove(handlerName);
+  }
+  
+  public static Boolean isContextBypassed(String handlerName, String ctx) {
+    return TriggerHandler.bypassedHandlerContexts.get(handlerName).contains(ctx);
+  }
 
+  // clear all bypasses, including context bypasses
   public static void clearAllBypasses() {
     TriggerHandler.bypassedHandlers.clear();
+    TriggerHandler.bypassedHandlerContexts.clear();
   }
 
   /***************************************
@@ -147,16 +191,40 @@ public virtual class TriggerHandler {
         Integer max = TriggerHandler.loopCountMap.get(handlerName).max;
         throw new TriggerHandlerException('Maximum loop count of ' + String.valueOf(max) + ' reached in ' + handlerName);
       }
+      if(this.ENABLE_IMPLICIT_BYPASS) {
+        TriggerHandler.loopCountMap.get(handlerName).implicitBypassBeforeExceeded(handlerName);
+      }
+    }
+    else {
+      TriggerHandler.loopCountMap.put(handlerName, new LoopCount(this.COONCURRENT_OPERATIONS, this.ENABLE_IMPLICIT_BYPASS, this.IMPLICIT_BYPASS_LEVELS));
     }
   }
 
   // make sure this trigger should continue to run
   @TestVisible
   private Boolean validateRun() {
+    String handlerName = getHandlerName();
     if(!this.isTriggerExecuting || this.context == null) {
       throw new TriggerHandlerException('Trigger handler called outside of Trigger execution');
     }
-    return !TriggerHandler.bypassedHandlers.contains(getHandlerName());
+    if(TriggerHandler.loopCountMap.containsKey(handlerName)) {
+      // validate implicit bypass values
+      if(this.ENABLE_IMPLICIT_BYPASS) {
+        TriggerHandler.loopCountMap.get(handlerName).implicitBypassBeforeExceed(handlerName);
+      }
+      if(TriggerHandler.loopCountMap.get(handlerName).exceeded()) {
+        throw new TriggerHandlerException('Maximum loop count of ' + TriggerHandler.loopCountMap.get(handler).max + ' reached in ' + handler);
+      }
+    }
+    if(TriggerHandler.bypassedHandlers.contains(handlerName)) {
+      return false;
+    }
+    if(TriggerHandler.bypassedHandlerContexts.containsKey(handlerName)) {
+      if(TriggerHandler.bypassedContextForHandlers.get(handler).contains(this.context.name())) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @TestVisible
@@ -193,16 +261,31 @@ public virtual class TriggerHandler {
   private class LoopCount {
     private Integer max;
     private Integer count;
+    private Integer implicitBypassCount;
+    private Integer enableImplicitBypass;
 
     public LoopCount() {
-      this.max = 5;
+      this.max = TriggerHandler.MAX_CONCURRENT_OPERATIONS;
       this.count = 0;
+      this.implicitBypassCount = TriggerHandler.MAX_IMPLICIT_BYPASS_LEVELS;
+      this.enableImplicitBypass = false;
     }
 
+    // overloaded constructor
     public LoopCount(Integer max) {
       this.max = max;
       this.count = 0;
+      this.implicitBypassCount = TriggerHandler.MAX_IMPLICIT_BYPASS_LEVELS; 
+      this.enableImplicitBypass = false; 
     }
+    
+    // overloaded constructor
+    public LoopCount(Integer max, Boolean enableImplicitBypass, Integer implicitBypassCount) {
+      this.max = max; 
+      this.count = 0; 
+      this.implicitBypassCount = implicitBypassCount; 
+      this.enableImplicitBypass = enableImplicitBypass; 
+    } 
 
     public Boolean increment() {
       this.count++;
@@ -223,6 +306,13 @@ public virtual class TriggerHandler {
 
     public void setMax(Integer max) {
       this.max = max;
+    }
+    
+    // instead of throwing exception after defined run, the handler will be added to a bypass list
+    public void implicitBypassBeforeExceed(String handlerName) {
+      if(this.count > this.implicitBypassCount && this.enableImplicitBypass) {
+        TriggerHandler.bypass(handlerName);
+      }
     }
   }
 
